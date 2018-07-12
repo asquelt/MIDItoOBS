@@ -1,5 +1,5 @@
 from __future__ import division
-import mido, websocket, threading, sys, json, atexit, ast
+import mido, websocket, threading, sys, json, atexit, ast, signal
 from tinydb import TinyDB, Query
 
 ####Change IP and Port here
@@ -18,6 +18,7 @@ def midicallback(message):
         Search = Query()
         result = db.search((Search.msg_type == message.type) & (Search.msgNoC == message.note))
         if result:
+            outport.send(mido.Message('note_on', note=message.note, velocity=2))
             for res in result:
                 if "request" in res:
                     if res["request"] == "ToggleSourceVisibility":
@@ -71,13 +72,24 @@ def midicallback(message):
         print(message)
 
 def exitScript():
+    ledsinit(0)
     port.close()
 
 def obs_on_message(ws, message):
     global actioncounter
     jsn = json.loads(message)
+    print("DEBUG -- MSG: %s" % jsn)
     if "error" in jsn:
         print("Error: %s" % jsn["error"])
+    if "sources" in jsn:
+        ledsinit(1)
+        print "Scene: %s [%s]" % (jsn['scene-name'],jsn['update-type'])
+        if jsn['update-type'] == 'PreviewSceneChanged':
+            vel = 3
+        if jsn['update-type'] == 'SwitchScenes':
+            vel = 5
+        for res in jsn['sources']:
+            print("Active Source: %s [%s]" % (res['name'],res['type']))
     else:
         for line in actionbuffer:
             if jsn["message-id"] == line[0]:
@@ -89,7 +101,7 @@ def obs_on_message(ws, message):
                     obs_ws.send(line[1] % render)
                 actionbuffer.remove([line[0], line[1], line[2]])
                 break
-            
+
 def obs_on_error(ws, error):
     print("Websocket Error: %" % str(error))
 
@@ -98,12 +110,23 @@ def obs_on_close(ws):
 
 def obs_on_open(ws):
     print("OBS connected")
-    
+
 def obs_start():
     obs_ws.run_forever()
 
 def scalemap(inp, ista, isto, osta, osto):
     return osta + (osto - osta) * ((inp - ista) / (isto - ista))
+
+def ledsinit(value):
+    #if value:
+    #    for i in range(0,99):
+    #        outport.send(mido.Message('note_on', note=i, velocity=0))
+    Search = Query()
+    result = db.search(Search.input_type == 'button')
+    if result:
+       for res in result:
+           print "DEBUG: %s" % res
+           outport.send(mido.Message('note_on', note=res['msgNoC'], velocity=value))
 
 if __name__ == "__main__":
     print("MIDItoOBS made by lebaston100.de")
@@ -114,6 +137,7 @@ if __name__ == "__main__":
     if result:
         try:
             port = mido.open_input(result[0]["value"], callback=midicallback)
+            outport = mido.open_output(result[0]["value"])
         except:
             print("The midi device you setup is not connected or now under a different name.")
             print("Please plugin in the device or run setup.py again and restart this script.")
@@ -122,8 +146,11 @@ if __name__ == "__main__":
         obs_ws = websocket.WebSocketApp("ws://" + serverIP + ":" + serverPort, on_message = obs_on_message, on_error = obs_on_error, on_close = obs_on_close)
         obs_ws.on_open = obs_on_open
         atexit.register(exitScript)
+        ledsinit(1)
         threading.Thread(target=obs_start).start()
+        sys.exit()
     else:
         print("Please run setup.py")
         time.sleep(5)
         sys.exit()
+
